@@ -152,12 +152,14 @@ func (r *PostgresRepository) FindByIdempotencyKey(ctx context.Context, key strin
 		err := tx.QueryRow(ctx, query, key).Scan(&ledger_entry.ID, &ledger_entry.WalletID, &ledger_entry.Amount, &ledger_entry.Type, &ledger_entry.ReferenceID, &ledger_entry.IdempotencyKey, &ledger_entry.CreatedAt)
 
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, pgx.ErrNoRows
+			return nil, nil
 		}
 
 		if err != nil {
 			return nil, err
 		}
+
+		return ledger_entry, nil
 
 	}
 	err := r.pool.QueryRow(ctx, query, key).Scan(&ledger_entry.ID, &ledger_entry.WalletID, &ledger_entry.Amount, &ledger_entry.Type, &ledger_entry.ReferenceID, &ledger_entry.IdempotencyKey, &ledger_entry.CreatedAt)

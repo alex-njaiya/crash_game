@@ -228,7 +228,7 @@ func TestConcurrentDebit_WithLocking_NoOverdraft(t *testing.T) {
 				}
 			}
 
-			if err := tx.Commit(ctx); err != nil{
+			if err := tx.Commit(ctx); err != nil {
 				t.Logf("goroutine %d commit failed: %v", i, err)
 			}
 
@@ -239,4 +239,64 @@ func TestConcurrentDebit_WithLocking_NoOverdraft(t *testing.T) {
 	finalBalance, _ := repo.GetBalance(ctx, w.ID)
 	t.Logf("final balance: %d", finalBalance)
 
+}
+
+func TestService_ConcurrentDebit_NoOverdraft(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	repo := wallet.NewPostgresRepository(pool)
+
+	svc := wallet.NewService(repo, pool)
+
+	w := createTestWallet(t, ctx, pool)
+
+	err := svc.Credit(ctx, w.ID, 1000, wallet.EntryDeposit, uuid.New(), "seed-deposit")
+
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+
+			// debit from the wallet concurrently
+			err := svc.Debit(ctx, w.ID, 200, wallet.EntryBetStake, uuid.New(), fmt.Sprintf("bet-%d", i))
+
+			if err != nil {
+				t.Logf("goroutine %d debit failed: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	balance, err := repo.GetBalance(ctx, w.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), balance) //should return 0 since five succeed and the others fail returning ErrInsufficientBalance
+	t.Logf("newbalance: %d", balance)
+}
+
+func TestDebit_IdempotentRetry(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	repo := wallet.NewPostgresRepository(pool)
+
+	svc := wallet.NewService(repo, pool)
+
+	w := createTestWallet(t, ctx, pool)
+	err := svc.Credit(ctx, w.ID, 1000, wallet.EntryDeposit, uuid.New(), "seed-deposit")
+	require.NoError(t, err)
+
+	err = svc.Debit(ctx, w.ID, 500, wallet.EntryBetStake, uuid.New(), "same-key")
+	require.NoError(t, err)
+
+	err = svc.Debit(ctx, w.ID, 500, wallet.EntryBetStake, uuid.New(), "same-key")
+	require.NoError(t, err)
+
+	balance, err := repo.GetBalance(ctx, w.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(500), balance)
+	t.Logf("newbalance: %d", balance)
 }
