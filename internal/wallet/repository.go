@@ -6,8 +6,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+
+type queryable interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 type txKey struct{}
 
@@ -46,25 +53,29 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	}
 }
 
+
+func (r *PostgresRepository) db(ctx context.Context) queryable {
+	if tx, ok := TxtContext(ctx); ok {
+		return tx
+	}
+
+	return r.pool
+}
+
+
 func (r *PostgresRepository) CreateWallet(ctx context.Context, UserID uuid.UUID) (*Wallet, error) {
 	wallet := new(Wallet)
 
 	query := `INSERT INTO wallets (user_id) VALUES ($1) RETURNING id, user_id, currency, created_at`
 
-	// check for transaction in ctx
-	if tx, ok := TxtContext(ctx); ok {
-		err := tx.QueryRow(ctx, query, UserID).Scan(&wallet.ID, &wallet.UserID, &wallet.Currency, &wallet.CreatedAt)
-
-		if err != nil {
-			return nil, err
-		}
-
-		return wallet, nil
-	}
-
 	// fallback to the connection pool if no transaction
-	err := r.pool.QueryRow(ctx, query, UserID).Scan(&wallet.ID, &wallet.UserID, &wallet.Currency, &wallet.CreatedAt)
+	err := r.db(ctx).QueryRow(ctx, query, UserID).Scan(&wallet.ID, &wallet.UserID, &wallet.Currency, &wallet.CreatedAt)
 
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	
 	if err != nil {
 		return nil, err
 	}
