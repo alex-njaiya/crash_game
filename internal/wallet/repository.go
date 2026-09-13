@@ -29,7 +29,7 @@ func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
 }
 
 // extract an active transaction from a context if exists
-func TxtContext(ctx context.Context) (pgx.Tx, bool) {
+func TxContext(ctx context.Context) (pgx.Tx, bool) {
 	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
 
 	return tx, ok
@@ -55,7 +55,7 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 
 
 func (r *PostgresRepository) db(ctx context.Context) queryable {
-	if tx, ok := TxtContext(ctx); ok {
+	if tx, ok := TxContext(ctx); ok {
 		return tx
 	}
 
@@ -88,21 +88,7 @@ func (r *PostgresRepository) GetBalance(ctx context.Context, walletID uuid.UUID)
 
 	query := `SELECT balance FROM wallet_balances WHERE wallet_id = $1`
 
-	if tx, ok := TxtContext(ctx); ok {
-		err := tx.QueryRow(ctx, query, walletID).Scan(&balance)
-
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, nil
-		}
-
-		if err != nil {
-			return 0, err
-		}
-
-		return balance, nil
-	}
-
-	err := r.pool.QueryRow(ctx, query, walletID).Scan(&balance)
+	err := r.db(ctx).QueryRow(ctx, query, walletID).Scan(&balance)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
@@ -118,26 +104,7 @@ func (r *PostgresRepository) GetBalance(ctx context.Context, walletID uuid.UUID)
 func (r *PostgresRepository) InsertLedgerEntry(ctx context.Context, entry LedgerEntry) error {
 	query := `INSERT INTO ledger_entries (id, wallet_id, amount, type, reference_id, idempotency_key, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 
-	if tx, ok := TxtContext(ctx); ok {
-		_, err := tx.Exec(ctx, query,
-			entry.ID,
-			entry.WalletID,
-			entry.Amount,
-			entry.Type,
-			entry.ReferenceID,
-			entry.IdempotencyKey,
-			entry.CreatedAt,
-		)
-
-		if err != nil {
-			return err
-		}
-
-		return nil
-
-	}
-
-	_, err := r.pool.Exec(ctx, query,
+	_, err := r.db(ctx).Exec(ctx, query,
 		entry.ID,
 		entry.WalletID,
 		entry.Amount,
@@ -159,21 +126,7 @@ func (r *PostgresRepository) FindByIdempotencyKey(ctx context.Context, key strin
 
 	query := `SELECT id, wallet_id, amount, type, reference_id, idempotency_key, created_at FROM ledger_entries WHERE idempotency_key = $1`
 
-	if tx, ok := TxtContext(ctx); ok {
-		err := tx.QueryRow(ctx, query, key).Scan(&ledger_entry.ID, &ledger_entry.WalletID, &ledger_entry.Amount, &ledger_entry.Type, &ledger_entry.ReferenceID, &ledger_entry.IdempotencyKey, &ledger_entry.CreatedAt)
-
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-
-		if err != nil {
-			return nil, err
-		}
-
-		return ledger_entry, nil
-
-	}
-	err := r.pool.QueryRow(ctx, query, key).Scan(&ledger_entry.ID, &ledger_entry.WalletID, &ledger_entry.Amount, &ledger_entry.Type, &ledger_entry.ReferenceID, &ledger_entry.IdempotencyKey, &ledger_entry.CreatedAt)
+	err := r.db(ctx).QueryRow(ctx, query, key).Scan(&ledger_entry.ID, &ledger_entry.WalletID, &ledger_entry.Amount, &ledger_entry.Type, &ledger_entry.ReferenceID, &ledger_entry.IdempotencyKey, &ledger_entry.CreatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -188,7 +141,7 @@ func (r *PostgresRepository) FindByIdempotencyKey(ctx context.Context, key strin
 
 
 func (r *PostgresRepository) LockWallet(ctx context.Context, walletID uuid.UUID) error {
-	if tx, ok := TxtContext(ctx); ok {
+	if tx, ok := TxContext(ctx); ok {
 		_, err := tx.Exec(ctx, `SELECT id FROM wallets WHERE id = $1 FOR UPDATE`, walletID)
 
 		return err
