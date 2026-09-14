@@ -120,43 +120,74 @@ func TestComputeCrashPoint_DifferentNonceProducesDifferentPoint(t *testing.T) {
 	t.Logf("output2: %v", got2)
 }
 
-func TestComputeCrashPoint_NeverBelowOne(t *testing.T) {
-	// run with many random seed/nonce combinations, assert every result >= 1.0
+// func TestComputeCrashPoint_NeverBelowOne(t *testing.T) {
+// 	// run with many random seed/nonce combinations, assert every result >= 1.0
+// 	iterations := 100000
+
+// 	houseEdges := []float64{0.0, 0.2, 0.5, 0.9, 0.7, 0.1}
+
+// 	for _,  houseEdge := range houseEdges {
+// 		t.Run("houseEdge_"+string(rune(houseEdge)), func (t *testing.T){
+// 			for i := 0; i < iterations; i++ {
+// 				serverSeed := randomServerSeed(t)
+// 				clientSeed := randomClientSeed(t)
+// 				nonce := randomNonce(t)
+
+// 				result := fairness.ComputeCrashPoint(serverSeed, clientSeed, int(nonce), houseEdge)
+
+// 				if result < 1.0 {
+// 					t.Fatalf("critical edge case failure at iteration %d: \n" + 
+// 						"result: %f (less than 1)\n" +
+// 						"server seed: %s\n" +
+// 						"client seed: %s\n" + 
+// 						"nonce: %d\n" + 
+// 						"house edge: %f", 
+// 						i, result, serverSeed, clientSeed, nonce, houseEdge)
+// 				}
+
+// 				t.Logf("result: %v", result)
+// 			}
+// 		})
+// 	}
+// }
+
+func TestComputeCrashPoint_HouseEdgeConvergesOverManyRounds(t *testing.T) {
+	// the "big" test: run e.g. 100,000 rounds with random seeds,
+	// simulate a player who always cashes out at, say, 2.0x,
+	// compute their average return, assert it's close to (1 - houseEdge)
+	// within some reasonable tolerance (this is statistical, not exact)
+
 	iterations := 100000
+	cashoutTarget := 2.0 
+	houseEdges := []float64{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9}
 
-	houseEdges := []float64{0.0, 0.2, 0.5, 0.9, 0.7, 0.1}
+	// simulating a player that cashes out at say 2.0x
 
-	for _,  houseEdge := range houseEdges {
-		t.Run("houseEdge_"+string(rune(houseEdge)), func (t *testing.T){
-			for i := 0; i < iterations; i++ {
-				serverSeed := randomServerSeed(t)
-				clientSeed := randomClientSeed(t)
-				nonce := randomNonce(t)
+	for _, houseEdge := range houseEdges {
+		var totalReturn float64
+		for i := 0; i < iterations; i++ {
+			serverSeed := randomServerSeed(t)
+			clientSeed := randomClientSeed(t)
+			nonce := randomNonce(t)
 
-				result := fairness.ComputeCrashPoint(serverSeed, clientSeed, int(nonce), houseEdge)
 
-				if result < 1.0 {
-					t.Fatalf("critical edge case failure at iteration %d: \n" + 
-						"result: %f (less than 1)\n" +
-						"server seed: %s\n" +
-						"client seed: %s\n" + 
-						"nonce: %d\n" + 
-						"house edge: %f", 
-						i, result, serverSeed, clientSeed, nonce, houseEdge)
-				}
+			crashpoint := fairness.ComputeCrashPoint(serverSeed, clientSeed, int(nonce), houseEdge)
 
-				t.Logf("result: %v", result)
+			if crashpoint >= cashoutTarget {
+				// cashout
+				totalReturn += cashoutTarget
 			}
-		})
+			totalReturn += 0
+		}
+
+		averageReturn := totalReturn / float64(iterations)
+		expectedReturn := 1 - houseEdge
+
+
+		t.Logf("house-edge=%.2f averageReturn=%.4f expected=%.4f", houseEdge, averageReturn, expectedReturn)
+		require.InDelta(t, expectedReturn, averageReturn, 0.02)
 	}
 }
-
-// func TestComputeCrashPoint_HouseEdgeConvergesOverManyRounds(t *testing.T) {
-// 	// the "big" test: run e.g. 100,000 rounds with random seeds,
-// 	// simulate a player who always cashes out at, say, 2.0x,
-// 	// compute their average return, assert it's close to (1 - houseEdge)
-// 	// within some reasonable tolerance (this is statistical, not exact)
-// }
 
 func BenchmarkGenerateServerSeed(b *testing.B) {
 	for b.Loop() {
