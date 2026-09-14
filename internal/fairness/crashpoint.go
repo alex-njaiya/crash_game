@@ -24,5 +24,4 @@ func ComputeCrashPoint(serverSeed, clientSeed string, nonce int, houseEdge float
 
 	crash := (1 - houseEdge) / r
 	return math.Max(crash, 1.0)
-
 }
