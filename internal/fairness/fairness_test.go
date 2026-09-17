@@ -120,36 +120,36 @@ func TestComputeCrashPoint_DifferentNonceProducesDifferentPoint(t *testing.T) {
 	t.Logf("output2: %v", got2)
 }
 
-// func TestComputeCrashPoint_NeverBelowOne(t *testing.T) {
-// 	// run with many random seed/nonce combinations, assert every result >= 1.0
-// 	iterations := 100000
+func TestComputeCrashPoint_NeverBelowOne(t *testing.T) {
+	// run with many random seed/nonce combinations, assert every result >= 1.0
+	iterations := 100000
 
-// 	houseEdges := []float64{0.0, 0.2, 0.5, 0.9, 0.7, 0.1}
+	houseEdges := []float64{0.0, 0.2, 0.5, 0.9, 0.7, 0.1}
 
-// 	for _,  houseEdge := range houseEdges {
-// 		t.Run("houseEdge_"+string(rune(houseEdge)), func (t *testing.T){
-// 			for i := 0; i < iterations; i++ {
-// 				serverSeed := randomServerSeed(t)
-// 				clientSeed := randomClientSeed(t)
-// 				nonce := randomNonce(t)
+	for _,  houseEdge := range houseEdges {
+		t.Run("houseEdge_"+string(rune(houseEdge)), func (t *testing.T){
+			for i := 0; i < iterations; i++ {
+				serverSeed := randomServerSeed(t)
+				clientSeed := randomClientSeed(t)
+				nonce := randomNonce(t)
 
-// 				result := fairness.ComputeCrashPoint(serverSeed, clientSeed, int(nonce), houseEdge)
+				result := fairness.ComputeCrashPoint(serverSeed, clientSeed, int(nonce), houseEdge)
 
-// 				if result < 1.0 {
-// 					t.Fatalf("critical edge case failure at iteration %d: \n" + 
-// 						"result: %f (less than 1)\n" +
-// 						"server seed: %s\n" +
-// 						"client seed: %s\n" + 
-// 						"nonce: %d\n" + 
-// 						"house edge: %f", 
-// 						i, result, serverSeed, clientSeed, nonce, houseEdge)
-// 				}
+				if result < 1.0 {
+					t.Fatalf("critical edge case failure at iteration %d: \n" + 
+						"result: %f (less than 1)\n" +
+						"server seed: %s\n" +
+						"client seed: %s\n" + 
+						"nonce: %d\n" + 
+						"house edge: %f", 
+						i, result, serverSeed, clientSeed, nonce, houseEdge)
+				}
 
-// 				t.Logf("result: %v", result)
-// 			}
-// 		})
-// 	}
-// }
+				t.Logf("result: %v", result)
+			}
+		})
+	}
+}
 
 func TestComputeCrashPoint_HouseEdgeConvergesOverManyRounds(t *testing.T) {
 	// the "big" test: run e.g. 100,000 rounds with random seeds,
