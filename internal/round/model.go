@@ -15,14 +15,15 @@ const (
 )
 
 type Round struct {
-	ID             uuid.UUID
-	State          RoundState
-	ServerSeed     string
-	ServerSeedHash string
-	CrashPoint     float64
-	StartedAt      time.Time
-	CrushedAt      time.Time
-	Bets           map[uuid.UUID]int64
+	ID               uuid.UUID
+	State            RoundState
+	ServerSeed       string
+	ClientSeed       string
+	Nonce            int
+	ServerSeedHash   string
+	CrashPoint       float64
+	StartedAt        time.Time
+	RunningStartedAt time.Time
+	CrushedAt        time.Time
+	Bets             map[uuid.UUID]int64
 }
-
-// Only one thing is allowed to mutate the roundstate
