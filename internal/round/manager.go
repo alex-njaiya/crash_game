@@ -3,6 +3,7 @@ package round
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/alex-njaiya/popeye_the_sailor/internal/fairness"
@@ -13,6 +14,13 @@ import (
 // one goroutines owns a round entirely in its own memory
 // All requests come in through channels, get processed on at a time in a single loop for {select} and results
 // go back out through response channels/broadcast channels
+
+
+func computeMultiplierFromElapsed(elapsed time.Duration) float64 {
+	seconds := elapsed.Seconds()
+	growthRate := 0.06 // controls how fast the multiplier climbs
+	return math.Exp(growthRate * seconds)
+}
 
 type Manager struct {
 	wallet          *wallet.Service
