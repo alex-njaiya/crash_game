@@ -24,6 +24,6 @@ type Round struct {
 	CrashPoint       float64
 	StartedAt        time.Time
 	RunningStartedAt time.Time
-	CrushedAt        time.Time
+	CrashedAt        time.Time
 	Bets             map[uuid.UUID]int64
 }
