@@ -15,27 +15,28 @@ import (
 // All requests come in through channels, get processed on at a time in a single loop for {select} and results
 // go back out through response channels/broadcast channels
 
-
-func computeMultiplierFromElapsed(elapsed time.Duration) float64 {
-	seconds := elapsed.Seconds()
-	growthRate := 0.06 // controls how fast the multiplier climbs
-	return math.Exp(growthRate * seconds)
+type WalletService interface {
+	Debit(ctx context.Context, walletID uuid.UUID, amount int64, entryType wallet.EntryType, referenceID uuid.UUID, idempotencyKey string) error
+	Credit(ctx context.Context, walletID uuid.UUID, amount int64, entryType wallet.EntryType, referenceID uuid.UUID, idempotencyKey string) error
 }
 
 type Manager struct {
-	wallet          *wallet.Service
+	wallet          WalletService
 	currentRound    *Round
 	betRequests     chan betRequest
 	cashoutRequests chan cashoutRequest
 	broadcast       chan<- Event //outbound to websocket hub
 	houseEdge       float64
 
-	serverSeed     string // current epoch seed
-	serverSeedHash string
-	clientSeed     string
-	nonce          int
-	roundsPerEpoch int // set to something like 100
-
+	serverSeed           string // current epoch seed
+	serverSeedHash       string
+	clientSeed           string
+	nonce                int
+	roundsPerEpoch       int // set to something like 100
+	bettingWindow        time.Duration
+	cooldownWindow       time.Duration
+	multiplierGrowthRate float64
+	maxMultiplier        float64
 }
 
 type betRequest struct {
@@ -76,19 +77,20 @@ type EpochRevealedEvent struct {
 
 func (EpochRevealedEvent) isEvent() {}
 
-const bettingWindow = 5 * time.Second
-const cooldownWindow = 4 * time.Second
-
 // new manager
 
-func NewManager(broadcast chan<- Event, walletsvc *wallet.Service, houseEdge float64, roundsPerEpoch int) *Manager {
+func NewManager(broadcast chan<- Event, walletsvc WalletService, houseEdge float64, roundsPerEpoch int) *Manager {
 	m := &Manager{
-		wallet:          walletsvc,
-		betRequests:     make(chan betRequest, 10),
-		cashoutRequests: make(chan cashoutRequest, 10),
-		broadcast:       broadcast,
-		houseEdge:       houseEdge,
-		roundsPerEpoch:  roundsPerEpoch,
+		wallet:               walletsvc,
+		betRequests:          make(chan betRequest, 10),
+		cashoutRequests:      make(chan cashoutRequest, 10),
+		broadcast:            broadcast,
+		houseEdge:            houseEdge,
+		roundsPerEpoch:       roundsPerEpoch,
+		bettingWindow:        5 * time.Second,
+		cooldownWindow:       5 * time.Second,
+		multiplierGrowthRate: 0.06,
+		maxMultiplier:        100.0,
 	}
 
 	m.rotateEpoch()
@@ -96,8 +98,14 @@ func NewManager(broadcast chan<- Event, walletsvc *wallet.Service, houseEdge flo
 	return m
 }
 
+func (m *Manager) computeMultiplierFromElapsed(elapsed time.Duration) float64 {
+	seconds := elapsed.Seconds()
+	return math.Exp(m.multiplierGrowthRate * seconds)
+}
+
 func (m *Manager) newRound() *Round {
 	crashpoint := fairness.ComputeCrashPoint(m.serverSeed, m.clientSeed, m.nonce, m.houseEdge)
+	crashpoint = math.Min(crashpoint, m.maxMultiplier)
 
 	round := &Round{
 		ID:             uuid.New(),
@@ -124,6 +132,7 @@ func (m *Manager) rotateEpoch() {
 	// generate the client and server seed
 	// hash the server seed and reset nonce to 0
 
+	oldSeed := m.serverSeed
 	serverSeed, _ := fairness.GenerateServerSeed()
 	clientSeed, _ := fairness.GenerateServerSeed()
 
@@ -132,7 +141,9 @@ func (m *Manager) rotateEpoch() {
 	m.clientSeed = clientSeed
 	m.nonce = 0
 
-	m.broadcast <- EpochRevealedEvent{ServerSeed: serverSeed, ServerSeedHash: m.serverSeedHash}
+	if oldSeed != "" {
+		m.broadcast <- EpochRevealedEvent{ServerSeed: oldSeed, ServerSeedHash: fairness.HashSeed(oldSeed)}
+	}
 }
 
 func (m *Manager) Run(ctx context.Context) {
@@ -182,7 +193,7 @@ func (m *Manager) handleCashout(req cashoutRequest) error {
 		return ErrBetNotPlaced
 	}
 
-	currentMultiplier := computeMultiplierFromElapsed(time.Since(m.currentRound.RunningStartedAt))
+	currentMultiplier := m.computeMultiplierFromElapsed(time.Since(m.currentRound.RunningStartedAt))
 
 	payout := int64(float64(bet) * currentMultiplier)
 
@@ -198,11 +209,11 @@ func (m *Manager) handleCashout(req cashoutRequest) error {
 func (m *Manager) tick() {
 	switch m.currentRound.State {
 	case StateBetting:
-		if time.Since(m.currentRound.StartedAt) >= bettingWindow {
+		if time.Since(m.currentRound.RunningStartedAt) >= m.bettingWindow {
 			m.startRunning()
 		}
 	case StateRunning:
-		multiplier := computeMultiplierFromElapsed(time.Since(m.currentRound.StartedAt))
+		multiplier := m.computeMultiplierFromElapsed(time.Since(m.currentRound.RunningStartedAt))
 
 		if multiplier >= m.currentRound.CrashPoint {
 			m.crash() // reveal the seed, settles remaining bets as losses, flip states
@@ -211,7 +222,7 @@ func (m *Manager) tick() {
 		}
 
 	case StateCrashed:
-		if time.Since(m.currentRound.CrushedAt) > cooldownWindow {
+		if time.Since(m.currentRound.CrashedAt) > m.cooldownWindow {
 			m.startNewRound() // generate a new server seed, reset state to betting
 		}
 	}
@@ -225,7 +236,7 @@ func (m *Manager) startRunning() {
 
 func (m *Manager) crash() {
 	m.currentRound.State = StateCrashed
-	m.currentRound.CrushedAt = time.Now()
+	m.currentRound.CrashedAt = time.Now()
 	// broadcast the crash event and settle the remaining bets in bets as losses since they did not cashout
 	m.broadcast <- CrashEvent{Crashpoint: m.currentRound.CrashPoint, Nonce: m.currentRound.Nonce}
 }
@@ -234,30 +245,27 @@ func (m *Manager) startNewRound() {
 	m.currentRound = m.newRound()
 }
 
-
 func (m *Manager) PlaceBet(userID, walletID uuid.UUID, amount int64) error {
 	resultCh := make(chan error, 1)
 
-
 	m.betRequests <- betRequest{
-		UserID: userID,
+		UserID:   userID,
 		WalletID: walletID,
-		Amount: amount,
+		Amount:   amount,
 		ResultCh: resultCh,
 	}
 
-	return <- resultCh
+	return <-resultCh
 }
-
 
 func (m *Manager) CashOut(userID, walletID uuid.UUID) error {
 	resultCh := make(chan error, 1)
 
 	m.cashoutRequests <- cashoutRequest{
-		UserID: userID,
+		UserID:   userID,
 		WalletID: walletID,
 		ResultCh: resultCh,
 	}
 
-	return <- resultCh
+	return <-resultCh
 }
