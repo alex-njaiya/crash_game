@@ -1,0 +1,132 @@
+package round
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type PostgresRepository struct {
+	pool *pgxpool.Pool
+}
+
+type Repository interface {
+	InsertRound(ctx context.Context, round Round) error
+	GetRoundById(ctx context.Context, id uuid.UUID) (*Round, error)
+	GetAllRoundsByTime(ctx context.Context, time time.Time) ([]*Round, error)
+}
+
+func NewPostgreRepo(pool *pgxpool.Pool) *PostgresRepository {
+	return &PostgresRepository{
+		pool: pool,
+	}
+}
+
+func (r *PostgresRepository) InsertRound(ctx context.Context, round Round) error {
+	query := `INSERT INTO rounds (id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+
+	_, err := r.pool.Exec(ctx, query,
+		round.ID,
+		round.State,
+		round.ServerSeed,
+		round.ClientSeed,
+		round.ServerSeedHash,
+		round.Nonce,
+		round.HouseEdge,
+		round.CrashPoint,
+		round.StartedAt,
+		round.RunningStartedAt,
+		round.CrashedAt,
+	)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *PostgresRepository) GetRoundById(ctx context.Context, roundId uuid.UUID) (*Round, error) {
+	round := new(Round)
+
+	query := `SELECT id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at WHERE id = $1`
+
+	err := r.pool.QueryRow(ctx, query, roundId).Scan(
+		&round.ID,
+		&round.State,
+		&round.ServerSeed,
+		&round.ClientSeed,
+		&round.ServerSeedHash,
+		&round.Nonce,
+		&round.HouseEdge,
+		&round.CrashPoint,
+		&round.StartedAt,
+		&round.RunningStartedAt,
+		&round.CrashedAt,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return round, nil
+}
+
+
+func (r *PostgresRepository) GetAllRoundsByTime(ctx context.Context, timeline time.Time) ([]*Round, error) {
+	query := `SELECT id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at ORDER BY created_at ASC`
+
+	rows, err := r.pool.Query(ctx, query)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	var rounds []*Round
+
+	for rows.Next() {
+		singleRound := new(Round)
+
+		err := rows.Scan(
+			&singleRound.ID,
+			&singleRound.State,
+			&singleRound.ServerSeed,
+			&singleRound.ClientSeed,
+			&singleRound.ServerSeedHash,
+			&singleRound.Nonce,
+			&singleRound.HouseEdge,
+			&singleRound.CrashPoint,
+			&singleRound.StartedAt,
+			&singleRound.RunningStartedAt,
+			&singleRound.CrashedAt,
+		)
+
+		if err != nil {
+			return nil, err
+		}
+
+		rounds = append(rounds, singleRound)
+	}
+
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+
+	return rounds, nil
+}
