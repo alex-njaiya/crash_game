@@ -20,6 +20,7 @@ type Round struct {
 	ServerSeed       string
 	ClientSeed       string
 	Nonce            int
+	HouseEdge        float64
 	ServerSeedHash   string
 	CrashPoint       float64
 	StartedAt        time.Time
