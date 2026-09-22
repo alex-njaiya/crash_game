@@ -16,6 +16,8 @@ type PostgresRepository struct {
 
 type Repository interface {
 	InsertRound(ctx context.Context, round Round) error
+	MarkRunning(ctx context.Context, roundId uuid.UUID, runningStartedAt time.Time)error 
+	MarkCrashed(ctx context.Context, roundId uuid.UUID, crashedAt time.Time) error
 	GetRoundById(ctx context.Context, id uuid.UUID) (*Round, error)
 	GetAllRoundsByTime(ctx context.Context, time time.Time) ([]*Round, error)
 }
@@ -129,4 +131,30 @@ func (r *PostgresRepository) GetAllRoundsByTime(ctx context.Context, timeline ti
 
 
 	return rounds, nil
+}
+
+
+func (r *PostgresRepository) MarkRunning(ctx context.Context, roundId uuid.UUID, runningStartedAt time.Time) error {
+	query := `UPDATE rounds SET running_started_at = $1 WHERE id = $2`
+
+	_, err := r.pool.Exec(ctx, query, runningStartedAt, roundId)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+
+func (r *PostgresRepository) MarkCrashed(ctx context.Context, roundId uuid.UUID, crashedAt time.Time) error {
+	query := `UPDATE rounds SET crashed_at = $1 WHERE id = $2`
+
+	_, err := r.pool.Exec(ctx, query, crashedAt, roundId)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
