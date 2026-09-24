@@ -64,7 +64,7 @@ func TestTick_BettingTransitionsToRunning_AfterWindowElapsed(t *testing.T) {
 	m.tick()
 
 	require.Equal(t, StateRunning, m.currentRound.State)
-	require.False(t, m.currentRound.RunningStartedAt.IsZero())
+	require.NotNil(t, m.currentRound.RunningStartedAt)
 }
 
 func TestTick_RunningTransitionsToCrashed_WhenMultiplierReachesCrashPoint(t *testing.T) {
@@ -73,11 +73,13 @@ func TestTick_RunningTransitionsToCrashed_WhenMultiplierReachesCrashPoint(t *tes
 	m := NewManager(broadcast, fw, 0.03, 1000)
 
 	m.currentRound.State = StateRunning
-	m.currentRound.RunningStartedAt = time.Now().Add(-10 * time.Second) // pretend 10s have already elapsed
-	m.currentRound.CrashPoint = 1.01                                    // force a very low, easy-to-reach target
+	runningStart := time.Now().Add(-10 * time.Second) //pretend 10s have elapsed
+	m.currentRound.RunningStartedAt = &runningStart
+	m.currentRound.CrashPoint = 1.01 // force a very low, easy-to-reach target
 
 	m.tick()
 
+	require.NotNil(t, m.currentRound.RunningStartedAt)
 	require.Equal(t, StateCrashed, m.currentRound.State)
 }
 
@@ -115,7 +117,8 @@ func TestHandleCashout_CreditsWalletAndRemovesBet(t *testing.T) {
 	userID := uuid.New()
 	walletID := uuid.New()
 	m.currentRound.State = StateRunning
-	m.currentRound.RunningStartedAt = time.Now() // fresh — multiplier ~1.0x
+	now := time.Now()
+	m.currentRound.RunningStartedAt = &now // fresh — multiplier ~1.0x
 	m.currentRound.Bets[userID] = 500
 
 	err := m.handleCashout(cashoutRequest{UserID: userID, WalletID: walletID})
