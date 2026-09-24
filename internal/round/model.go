@@ -24,7 +24,7 @@ type Round struct {
 	ServerSeedHash   string
 	CrashPoint       float64
 	StartedAt        time.Time
-	RunningStartedAt time.Time
-	CrashedAt        time.Time
+	RunningStartedAt *time.Time
+	CrashedAt        *time.Time
 	Bets             map[uuid.UUID]int64
 }
