@@ -5,16 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-type queryable interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
 
 type PostgresRepository struct {
 	pool *pgxpool.Pool
@@ -35,26 +27,10 @@ func NewPostgreRepo(pool *pgxpool.Pool) *PostgresRepository {
 	}
 }
 
-type txKey struct{}
-
-func TxContext(ctx context.Context) (pgx.Tx, bool) {
-	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
-
-	return tx, ok
-}
-
-func (r *PostgresRepository) db(ctx context.Context) queryable {
-	if tx, ok := TxContext(ctx); ok {
-		return tx
-	}
-
-	return r.pool
-}
-
 func (r *PostgresRepository) InsertRound(ctx context.Context, round Round) error {
 	query := `INSERT INTO rounds (id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
-	_, err := r.db(ctx).Exec(ctx, query,
+	_, err := r.pool.Exec(ctx, query,
 		round.ID,
 		round.State,
 		round.ServerSeed,
@@ -80,7 +56,7 @@ func (r *PostgresRepository) GetRoundById(ctx context.Context, roundId uuid.UUID
 
 	query := `SELECT id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at FROM rounds WHERE id = $1`
 
-	err := r.db(ctx).QueryRow(ctx, query, roundId).Scan(
+	err := r.pool.QueryRow(ctx, query, roundId).Scan(
 		&round.ID,
 		&round.State,
 		&round.ServerSeed,
@@ -104,7 +80,7 @@ func (r *PostgresRepository) GetRoundById(ctx context.Context, roundId uuid.UUID
 func (r *PostgresRepository) GetRecentRounds(ctx context.Context, limit int) ([]*Round, error) {
 	query := `SELECT id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at FROM rounds ORDER BY started_at DESC LIMIT $1`
 
-	rows, err := r.db(ctx).Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query)
 
 	if err != nil {
 		return nil, err
@@ -148,7 +124,7 @@ func (r *PostgresRepository) GetRecentRounds(ctx context.Context, limit int) ([]
 func (r *PostgresRepository) GetRoundsBetween(ctx context.Context, from, to time.Time) ([]*Round, error) {
 	query := `SELECT id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at FROM rounds WHERE started_at >= $1 AND started_at <= $2 ORDER BY started_at ASC`
 
-	rows, err := r.db(ctx).Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query)
 
 	if err != nil {
 		return nil, err
@@ -192,7 +168,7 @@ func (r *PostgresRepository) GetRoundsBetween(ctx context.Context, from, to time
 func (r *PostgresRepository) MarkRunning(ctx context.Context, roundId uuid.UUID, runningStartedAt time.Time) error {
 	query := `UPDATE rounds SET running_started_at = $1 WHERE id = $2`
 
-	_, err := r.db(ctx).Exec(ctx, query, runningStartedAt, roundId)
+	_, err := r.pool.Exec(ctx, query, runningStartedAt, roundId)
 
 	if err != nil {
 		return err
@@ -204,7 +180,7 @@ func (r *PostgresRepository) MarkRunning(ctx context.Context, roundId uuid.UUID,
 func (r *PostgresRepository) MarkCrashed(ctx context.Context, roundId uuid.UUID, crashedAt time.Time) error {
 	query := `UPDATE rounds SET crashed_at = $1 WHERE id = $2`
 
-	_, err := r.db(ctx).Exec(ctx, query, crashedAt, roundId)
+	_, err := r.pool.Exec(ctx, query, crashedAt, roundId)
 
 	if err != nil {
 		return err
