@@ -193,7 +193,7 @@ func (m *Manager) handleCashout(req cashoutRequest) error {
 		return ErrBetNotPlaced
 	}
 
-	currentMultiplier := m.computeMultiplierFromElapsed(time.Since(m.currentRound.RunningStartedAt))
+	currentMultiplier := m.computeMultiplierFromElapsed(time.Since(*m.currentRound.RunningStartedAt))
 
 	payout := int64(float64(bet) * currentMultiplier)
 
@@ -209,11 +209,11 @@ func (m *Manager) handleCashout(req cashoutRequest) error {
 func (m *Manager) tick() {
 	switch m.currentRound.State {
 	case StateBetting:
-		if time.Since(m.currentRound.RunningStartedAt) >= m.bettingWindow {
+		if time.Since(m.currentRound.StartedAt) >= m.bettingWindow {
 			m.startRunning()
 		}
 	case StateRunning:
-		multiplier := m.computeMultiplierFromElapsed(time.Since(m.currentRound.RunningStartedAt))
+		multiplier := m.computeMultiplierFromElapsed(time.Since(*m.currentRound.RunningStartedAt))
 
 		if multiplier >= m.currentRound.CrashPoint {
 			m.crash() // reveal the seed, settles remaining bets as losses, flip states
@@ -222,7 +222,7 @@ func (m *Manager) tick() {
 		}
 
 	case StateCrashed:
-		if time.Since(m.currentRound.CrashedAt) > m.cooldownWindow {
+		if time.Since(*m.currentRound.CrashedAt) > m.cooldownWindow {
 			m.startNewRound() // generate a new server seed, reset state to betting
 		}
 	}
@@ -231,12 +231,14 @@ func (m *Manager) tick() {
 func (m *Manager) startRunning() {
 	// generate a seed and start the ticker
 	m.currentRound.State = StateRunning
-	m.currentRound.RunningStartedAt = time.Now()
+	now := time.Now()
+	m.currentRound.RunningStartedAt = &now
 }
 
 func (m *Manager) crash() {
 	m.currentRound.State = StateCrashed
-	m.currentRound.CrashedAt = time.Now()
+	now := time.Now()
+	m.currentRound.CrashedAt = &now
 	// broadcast the crash event and settle the remaining bets in bets as losses since they did not cashout
 	m.broadcast <- CrashEvent{Crashpoint: m.currentRound.CrashPoint, Nonce: m.currentRound.Nonce}
 }
