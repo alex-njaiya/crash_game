@@ -9,8 +9,8 @@ CREATE TABLE IF NOT EXISTS rounds (
     crashpoint DECIMAL(10, 4),
     started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     running_started_at TIMESTAMPTZ,
-    crashed_at TIMESTAMPTZ,
-)
+    crashed_at TIMESTAMPTZ
+);
 
-CREATE INDEX idx_rounds_started_at ON rounds (started_at DESC)
-CREATE INDEX idx_rounds_server_seed_hash ON rounds (server_seed_hash)
+CREATE INDEX idx_rounds_started_at ON rounds (started_at DESC);
+CREATE INDEX idx_rounds_server_seed_hash ON rounds (server_seed_hash);
