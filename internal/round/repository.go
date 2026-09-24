@@ -80,7 +80,7 @@ func (r *PostgresRepository) GetRoundById(ctx context.Context, roundId uuid.UUID
 func (r *PostgresRepository) GetRecentRounds(ctx context.Context, limit int) ([]*Round, error) {
 	query := `SELECT id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at FROM rounds ORDER BY started_at DESC LIMIT $1`
 
-	rows, err := r.pool.Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query, limit)
 
 	if err != nil {
 		return nil, err
