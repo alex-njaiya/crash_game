@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func createTestRound(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *round.Round {
+func createTestRound(t *testing.T, ctx context.Context, pool *pgxpool.Pool, createdAt time.Time) *round.Round {
 	t.Helper()
 
 	round_id := uuid.New()
@@ -37,7 +37,7 @@ func createTestRound(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rou
 		HouseEdge:        house_edge,
 		ServerSeedHash:   serverseed_hash,
 		CrashPoint:       crashpoint,
-		StartedAt:        time.Now(),
+		StartedAt:        createdAt,
 		RunningStartedAt: nil,
 		CrashedAt:        nil,
 	}
@@ -103,7 +103,7 @@ func TestGetRoundById_ReturnsNilForMissingRound(t *testing.T) {
 	ctx := context.Background()
 	repo := round.NewPostgreRepo(pool)
 
-	round := createTestRound(t, ctx, pool)
+	round := createTestRound(t, ctx, pool, time.Now())
 
 	round, err := repo.GetRoundById(ctx, round.ID)
 	require.NoError(t, err)
@@ -116,15 +116,15 @@ func TestGetRecentRounds_RespectsLimitAndOrder(t *testing.T) {
 	ctx := context.Background()
 	repo := round.NewPostgreRepo(pool)
 
-	_ = createTestRound(t, ctx, pool)
+	_ = createTestRound(t, ctx, pool, time.Now())
 
-	_ = createTestRound(t, ctx, pool)
+	_ = createTestRound(t, ctx, pool, time.Now())
 
-	_ = createTestRound(t, ctx, pool)
+	_ = createTestRound(t, ctx, pool, time.Now())
 
-	_ = createTestRound(t, ctx, pool)
+	_ = createTestRound(t, ctx, pool, time.Now())
 
-	_ = createTestRound(t, ctx, pool)
+	_ = createTestRound(t, ctx, pool, time.Now())
 
 	rounds, err := repo.GetRecentRounds(ctx, 3)
 
@@ -150,7 +150,54 @@ func TestGetRecentRounds_RespectsLimitAndOrder(t *testing.T) {
 
 }
 
-
 func TestGetRoundsBetween_FiltersCorrectly(t *testing.T) {
-	
+	// insert rounds spanning a wider time range, confirm only those within [from, to] come back.
+	pool := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	repo := round.NewPostgreRepo(pool)
+
+	basetime := time.Date(2026, time.September, 27, 10, 0, 0, 0, time.Local)
+
+
+
+	_ = createTestRound(t, ctx, pool, basetime)
+	_ = createTestRound(t, ctx, pool, basetime.Add(1 * time.Minute))
+	_ = createTestRound(t, ctx, pool, basetime.Add(2 * time.Minute))
+
+	// set a time window
+	fromWindow := basetime
+	toWindow := basetime.Add(2 * time.Minute +  30 * time.Second)
+
+	rounds, err := repo.GetRoundsBetween(ctx, fromWindow, toWindow)
+
+	require.NoError(t, err)
+	require.Equal(t, len(rounds), 3)
+	require.Equal(t, rounds[0].StartedAt, basetime.Add(1 * time.Minute))
+	require.Equal(t, rounds[1].StartedAt, basetime.Add(2 * time.Minute))
+}
+
+func TestMarkRunning_And_MarkCrashed_UpdateOnlyIntendedFields(t *testing.T) {
+	/* insert a round, call both updates, fetch it back,
+	confirm running_started_at/crashed_at/state changed
+	but seeds/crashpoint/nonce did not.*/
+
+
+	pool := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	repo := round.NewPostgreRepo(pool)
+
+	round := createTestRound(t, ctx, pool, time.Now())
+
+	require.Equal(t, "betting", string(round.State))
+
+
+	// update the state to running and the check again
+	err := repo.MarkRunning(ctx, round.ID, time.Now().Add(1 * time.Minute))
+	require.NoError(t, err)
+
+	require.Equal(t, "running", string(round.State))
+	// update the state to crashed and then check again
+
+	// err = repo.MarkCrashed(ctx, round)
+
 }
