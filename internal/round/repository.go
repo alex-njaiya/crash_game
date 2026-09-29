@@ -124,7 +124,7 @@ func (r *PostgresRepository) GetRecentRounds(ctx context.Context, limit int) ([]
 func (r *PostgresRepository) GetRoundsBetween(ctx context.Context, from, to time.Time) ([]*Round, error) {
 	query := `SELECT id, state, server_seed, client_seed, server_seed_hash, nonce, house_edge, crashpoint, started_at, running_started_at, crashed_at FROM rounds WHERE started_at >= $1 AND started_at <= $2 ORDER BY started_at ASC`
 
-	rows, err := r.pool.Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query, from, to)
 
 	if err != nil {
 		return nil, err
@@ -166,9 +166,9 @@ func (r *PostgresRepository) GetRoundsBetween(ctx context.Context, from, to time
 }
 
 func (r *PostgresRepository) MarkRunning(ctx context.Context, roundId uuid.UUID, runningStartedAt time.Time) error {
-	query := `UPDATE rounds SET running_started_at = $1 WHERE id = $2`
+	query := `UPDATE rounds SET state = $1, running_started_at = $2 WHERE id = $3`
 
-	_, err := r.pool.Exec(ctx, query, runningStartedAt, roundId)
+	_, err := r.pool.Exec(ctx, query, StateRunning, runningStartedAt, roundId)
 
 	if err != nil {
 		return err
@@ -178,9 +178,9 @@ func (r *PostgresRepository) MarkRunning(ctx context.Context, roundId uuid.UUID,
 }
 
 func (r *PostgresRepository) MarkCrashed(ctx context.Context, roundId uuid.UUID, crashedAt time.Time) error {
-	query := `UPDATE rounds SET crashed_at = $1 WHERE id = $2`
+	query := `UPDATE rounds SET state = $1, crashed_at = $2 WHERE id = $3`
 
-	_, err := r.pool.Exec(ctx, query, crashedAt, roundId)
+	_, err := r.pool.Exec(ctx, query, StateCrashed, crashedAt, roundId)
 
 	if err != nil {
 		return err
