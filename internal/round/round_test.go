@@ -172,8 +172,8 @@ func TestGetRoundsBetween_FiltersCorrectly(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, len(rounds), 3)
-	require.Equal(t, rounds[0].StartedAt, basetime.Add(1 * time.Minute))
-	require.Equal(t, rounds[1].StartedAt, basetime.Add(2 * time.Minute))
+	require.Equal(t, rounds[0].StartedAt, basetime)
+	require.Equal(t, rounds[1].StartedAt, basetime.Add(1 * time.Minute))
 }
 
 func TestMarkRunning_And_MarkCrashed_UpdateOnlyIntendedFields(t *testing.T) {
@@ -186,18 +186,46 @@ func TestMarkRunning_And_MarkCrashed_UpdateOnlyIntendedFields(t *testing.T) {
 	ctx := context.Background()
 	repo := round.NewPostgreRepo(pool)
 
-	round := createTestRound(t, ctx, pool, time.Now())
+	original := createTestRound(t, ctx, pool, time.Now())
+	require.Equal(t, "betting", string(original.State))
 
-	require.Equal(t, "betting", string(round.State))
 
-
+	//transition to running
 	// update the state to running and the check again
-	err := repo.MarkRunning(ctx, round.ID, time.Now().Add(1 * time.Minute))
+	runningTime :=  time.Now()
+	err := repo.MarkRunning(ctx, original.ID, runningTime)
 	require.NoError(t, err)
 
-	require.Equal(t, "running", string(round.State))
-	// update the state to crashed and then check again
+	afterRunning, err := repo.GetRoundById(ctx, original.ID)
+	require.NoError(t, err)
+	require.NotNil(t, afterRunning)
 
-	// err = repo.MarkCrashed(ctx, round)
+	require.Equal(t, round.StateRunning, afterRunning.State)
+	require.NotNil(t, afterRunning.RunningStartedAt)
+	require.WithinDuration(t, runningTime, *afterRunning.RunningStartedAt, time.Second)
+
+	// confirm that everything else is intact
+	require.Equal(t, original.ServerSeed, afterRunning.ServerSeed)
+	require.Equal(t, original.CrashPoint, afterRunning.CrashPoint)
+	require.Equal(t, original.Nonce, afterRunning.Nonce)
+
+	// transition to crashed
+	crashTime := time.Now()
+	err = repo.MarkCrashed(ctx, original.ID, crashTime)
+	require.NoError(t, err)
+
+	afterCrashed, err := repo.GetRoundById(ctx, original.ID)
+	require.NoError(t, err)
+	require.NotNil(t, afterCrashed)
+
+	require.Equal(t, round.StateCrashed, afterCrashed.State)
+	require.NotNil(t, afterCrashed.CrashedAt)
+	require.WithinDuration(t, crashTime, *afterCrashed.CrashedAt, time.Second)
+
+	// confirm the running data from the previous step is still intact
+	require.NotNil(t, afterCrashed.RunningStartedAt)
+	require.Equal(t, original.ServerSeed, afterCrashed.ServerSeed)
+	require.Equal(t, original.CrashPoint, afterCrashed.CrashPoint)
+	require.Equal(t, original.Nonce, afterCrashed.Nonce)
 
 }
