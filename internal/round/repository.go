@@ -2,6 +2,7 @@ package round
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -165,25 +166,32 @@ func (r *PostgresRepository) GetRoundsBetween(ctx context.Context, from, to time
 	return rounds, nil
 }
 
-func (r *PostgresRepository) MarkRunning(ctx context.Context, roundId uuid.UUID, runningStartedAt time.Time) error {
-	query := `UPDATE rounds SET state = $1, running_started_at = $2 WHERE id = $3`
+var ErrInvalidTransition = errors.New("round: not found or not in the expected state")
 
-	_, err := r.pool.Exec(ctx, query, StateRunning, runningStartedAt, roundId)
+func (r *PostgresRepository) MarkRunning(ctx context.Context, roundId uuid.UUID, runningStartedAt time.Time) error {
+	query := `UPDATE rounds SET state = $1, running_started_at = $2 WHERE id = $3 AND state = $4`
+
+	tag, err := r.pool.Exec(ctx, query, StateRunning, runningStartedAt, roundId, StateBetting)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidTransition
+	}
+	return nil
+}
+
+func (r *PostgresRepository) MarkCrashed(ctx context.Context, roundId uuid.UUID, crashedAt time.Time) error {
+	query := `UPDATE rounds SET state = $1, crashed_at = $2 WHERE id = $3 AND state = $4`
+
+	tag, err := r.pool.Exec(ctx, query, StateCrashed, crashedAt, roundId, StateRunning)
 
 	if err != nil {
 		return err
 	}
 
-	return nil
-}
-
-func (r *PostgresRepository) MarkCrashed(ctx context.Context, roundId uuid.UUID, crashedAt time.Time) error {
-	query := `UPDATE rounds SET state = $1, crashed_at = $2 WHERE id = $3`
-
-	_, err := r.pool.Exec(ctx, query, StateCrashed, crashedAt, roundId)
-
-	if err != nil {
-		return err
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidTransition
 	}
 
 	return nil
