@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
 	"math/big"
 	"testing"
 
@@ -11,8 +12,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCrashPoint_IsTruncatedAndCapped(t *testing.T) {
+	serverSeed, err := fairness.GenerateServerSeed()
+	require.NoError(t, err)
+	clientSeed, err := fairness.GenerateServerSeed()
+	require.NoError(t, err)
 
-func randomServerSeed(t *testing.T) string{
+	const (
+		houseEdge     = 0.01
+		maxMultiplier = 5.0
+	)
+
+	for nonce := 0; nonce < 1000; nonce++ {
+		raw := fairness.ComputeCrashPoint(serverSeed, clientSeed, nonce, houseEdge)
+		cp := fairness.CrashPoint(serverSeed, clientSeed, nonce, houseEdge, maxMultiplier)
+
+		// at most two decimals: within float noise of a whole number of cents
+		cents := cp * 100
+		require.InDelta(t, math.Round(cents), cents, 1e-9, "nonce %d: more than 2 decimals", nonce)
+
+		// bounds
+		require.LessOrEqual(t, cp, maxMultiplier, "nonce %d: exceeded cap", nonce)
+		require.GreaterOrEqual(t, cp, 1.0, "nonce %d: below 1.00x", nonce)
+
+		// truncation never rounds in the player's favour
+		require.LessOrEqual(t, cp, raw, "nonce %d: result exceeds the raw value", nonce)
+
+		// and loses less than one cent unless the cap applied
+		if raw < maxMultiplier {
+			require.Less(t, raw-cp, 0.0100001, "nonce %d: truncated by more than a cent", nonce)
+		}
+	}
+}
+
+func randomServerSeed(t *testing.T) string {
 	b := make([]byte, 32)
 
 	if _, err := rand.Read(b); err != nil {
@@ -32,7 +65,6 @@ func randomClientSeed(t *testing.T) string {
 	hash := sha256.Sum256(b)
 	return hex.EncodeToString(hash[:])
 }
-
 
 func randomNonce(t *testing.T) uint64 {
 	nBig, err := rand.Int(rand.Reader, big.NewInt(10000000))
@@ -126,8 +158,8 @@ func TestComputeCrashPoint_NeverBelowOne(t *testing.T) {
 
 	houseEdges := []float64{0.0, 0.2, 0.5, 0.9, 0.7, 0.1}
 
-	for _,  houseEdge := range houseEdges {
-		t.Run("houseEdge_"+string(rune(houseEdge)), func (t *testing.T){
+	for _, houseEdge := range houseEdges {
+		t.Run("houseEdge_"+string(rune(houseEdge)), func(t *testing.T) {
 			for i := 0; i < iterations; i++ {
 				serverSeed := randomServerSeed(t)
 				clientSeed := randomClientSeed(t)
@@ -136,12 +168,12 @@ func TestComputeCrashPoint_NeverBelowOne(t *testing.T) {
 				result := fairness.ComputeCrashPoint(serverSeed, clientSeed, int(nonce), houseEdge)
 
 				if result < 1.0 {
-					t.Fatalf("critical edge case failure at iteration %d: \n" + 
-						"result: %f (less than 1)\n" +
-						"server seed: %s\n" +
-						"client seed: %s\n" + 
-						"nonce: %d\n" + 
-						"house edge: %f", 
+					t.Fatalf("critical edge case failure at iteration %d: \n"+
+						"result: %f (less than 1)\n"+
+						"server seed: %s\n"+
+						"client seed: %s\n"+
+						"nonce: %d\n"+
+						"house edge: %f",
 						i, result, serverSeed, clientSeed, nonce, houseEdge)
 				}
 
@@ -158,7 +190,7 @@ func TestComputeCrashPoint_HouseEdgeConvergesOverManyRounds(t *testing.T) {
 	// within some reasonable tolerance (this is statistical, not exact)
 
 	iterations := 100000
-	cashoutTarget := 2.0 
+	cashoutTarget := 2.0
 	houseEdges := []float64{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9}
 
 	// simulating a player that cashes out at say 2.0x
@@ -169,7 +201,6 @@ func TestComputeCrashPoint_HouseEdgeConvergesOverManyRounds(t *testing.T) {
 			serverSeed := randomServerSeed(t)
 			clientSeed := randomClientSeed(t)
 			nonce := randomNonce(t)
-
 
 			crashpoint := fairness.ComputeCrashPoint(serverSeed, clientSeed, int(nonce), houseEdge)
 
@@ -182,7 +213,6 @@ func TestComputeCrashPoint_HouseEdgeConvergesOverManyRounds(t *testing.T) {
 
 		averageReturn := totalReturn / float64(iterations)
 		expectedReturn := 1 - houseEdge
-
 
 		t.Logf("house-edge=%.2f averageReturn=%.4f expected=%.4f", houseEdge, averageReturn, expectedReturn)
 		require.InDelta(t, expectedReturn, averageReturn, 0.02)

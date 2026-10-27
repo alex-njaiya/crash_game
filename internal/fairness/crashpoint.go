@@ -25,3 +25,12 @@ func ComputeCrashPoint(serverSeed, clientSeed string, nonce int, houseEdge float
 	crash := (1 - houseEdge) / r
 	return math.Max(crash, 1.0)
 }
+
+
+// CrashPoint is the canonical, verifiable crash point: the raw formula,
+// truncated to two decimals, then capped.
+func CrashPoint(serverSeed, clientSeed string, nonce int, houseEdge, maxMultiplier float64) float64 {
+	raw := ComputeCrashPoint(serverSeed, clientSeed, nonce, houseEdge)
+	truncated := math.Floor(raw*100) / 100
+	return math.Min(truncated, maxMultiplier)
+}
