@@ -3,6 +3,7 @@ package round
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -20,8 +21,15 @@ type WalletService interface {
 	Credit(ctx context.Context, walletID uuid.UUID, amount int64, entryType wallet.EntryType, referenceID uuid.UUID, idempotencyKey string) error
 }
 
+type RoundStore interface {
+	InsertRound(ctx context.Context, round Round) error
+	MarkRunning(ctx context.Context, roundId uuid.UUID, runningStartedAt time.Time) error
+	MarkCrashed(ctx context.Context, roundId uuid.UUID, crashedAt time.Time) error
+}
+
 type Manager struct {
 	wallet          WalletService
+	roundStore      RoundStore
 	currentRound    *Round
 	betRequests     chan betRequest
 	cashoutRequests chan cashoutRequest
@@ -79,9 +87,10 @@ func (EpochRevealedEvent) isEvent() {}
 
 // new manager
 
-func NewManager(broadcast chan<- Event, walletsvc WalletService, houseEdge float64, roundsPerEpoch int) *Manager {
+func NewManager(ctx context.Context, broadcast chan<- Event, walletsvc WalletService, store RoundStore, houseEdge float64, roundsPerEpoch int) *Manager {
 	m := &Manager{
 		wallet:               walletsvc,
+		roundStore:           store,
 		betRequests:          make(chan betRequest, 10),
 		cashoutRequests:      make(chan cashoutRequest, 10),
 		broadcast:            broadcast,
@@ -94,7 +103,7 @@ func NewManager(broadcast chan<- Event, walletsvc WalletService, houseEdge float
 	}
 
 	m.rotateEpoch()
-	m.currentRound = m.newRound()
+	m.currentRound = m.newRound(ctx)
 	return m
 }
 
@@ -103,7 +112,7 @@ func (m *Manager) computeMultiplierFromElapsed(elapsed time.Duration) float64 {
 	return math.Exp(m.multiplierGrowthRate * seconds)
 }
 
-func (m *Manager) newRound() *Round {
+func (m *Manager) newRound(ctx context.Context) *Round {
 	crashpoint := fairness.ComputeCrashPoint(m.serverSeed, m.clientSeed, m.nonce, m.houseEdge)
 	crashpoint = math.Min(crashpoint, m.maxMultiplier)
 
@@ -117,6 +126,10 @@ func (m *Manager) newRound() *Round {
 		CrashPoint:     crashpoint,
 		StartedAt:      time.Now(),
 		Bets:           make(map[uuid.UUID]int64),
+	}
+
+	if err := m.roundStore.InsertRound(ctx, *round); err != nil {
+		slog.Error("failed to persist new round", "round_id", round.ID, "err", err)
 	}
 
 	m.nonce++
@@ -162,7 +175,7 @@ func (m *Manager) Run(ctx context.Context) {
 			err := m.handleCashout(req)
 			req.ResultCh <- err
 		case <-ticker.C:
-			m.tick()
+			m.tick(ctx)
 		}
 	}
 }
@@ -206,45 +219,52 @@ func (m *Manager) handleCashout(req cashoutRequest) error {
 	return nil
 }
 
-func (m *Manager) tick() {
+func (m *Manager) tick(ctx context.Context) {
 	switch m.currentRound.State {
 	case StateBetting:
 		if time.Since(m.currentRound.StartedAt) >= m.bettingWindow {
-			m.startRunning()
+			m.startRunning(ctx)
 		}
 	case StateRunning:
 		multiplier := m.computeMultiplierFromElapsed(time.Since(*m.currentRound.RunningStartedAt))
 
 		if multiplier >= m.currentRound.CrashPoint {
-			m.crash() // reveal the seed, settles remaining bets as losses, flip states
+			m.crash(ctx) // reveal the seed, settles remaining bets as losses, flip states
 		} else {
 			m.broadcast <- TickEvent{Multiplier: multiplier}
 		}
 
 	case StateCrashed:
 		if time.Since(*m.currentRound.CrashedAt) > m.cooldownWindow {
-			m.startNewRound() // generate a new server seed, reset state to betting
+			m.startNewRound(ctx) // generate a new server seed, reset state to betting
 		}
 	}
 }
 
-func (m *Manager) startRunning() {
-	// generate a seed and start the ticker
-	m.currentRound.State = StateRunning
+func (m *Manager) startRunning(ctx context.Context) {
 	now := time.Now()
+	m.currentRound.State = StateRunning
 	m.currentRound.RunningStartedAt = &now
+
+	if err := m.roundStore.MarkRunning(ctx, m.currentRound.ID, now); err != nil {
+		slog.Error("failed to persist running state", "round_id", m.currentRound.ID, "err", err)
+	}
 }
 
-func (m *Manager) crash() {
-	m.currentRound.State = StateCrashed
+func (m *Manager) crash(ctx context.Context) {
 	now := time.Now()
+	m.currentRound.State = StateCrashed
 	m.currentRound.CrashedAt = &now
+
+	if err := m.roundStore.MarkCrashed(ctx, m.currentRound.ID, now); err != nil {
+		slog.Error("failed to persist crashed state", "round_id", m.currentRound.ID, "err", err)
+	}
 	// broadcast the crash event and settle the remaining bets in bets as losses since they did not cashout
 	m.broadcast <- CrashEvent{Crashpoint: m.currentRound.CrashPoint, Nonce: m.currentRound.Nonce}
 }
 
-func (m *Manager) startNewRound() {
-	m.currentRound = m.newRound()
+func (m *Manager) startNewRound(ctx context.Context) {
+	m.currentRound = m.newRound(ctx)
 }
 
 func (m *Manager) PlaceBet(userID, walletID uuid.UUID, amount int64) error {
