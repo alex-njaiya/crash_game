@@ -158,29 +158,26 @@ func TestGetRoundsBetween_FiltersCorrectly(t *testing.T) {
 
 	basetime := time.Date(2026, time.September, 27, 10, 0, 0, 0, time.Local)
 
-
-
 	_ = createTestRound(t, ctx, pool, basetime)
-	_ = createTestRound(t, ctx, pool, basetime.Add(1 * time.Minute))
-	_ = createTestRound(t, ctx, pool, basetime.Add(2 * time.Minute))
+	_ = createTestRound(t, ctx, pool, basetime.Add(1*time.Minute))
+	_ = createTestRound(t, ctx, pool, basetime.Add(2*time.Minute))
 
 	// set a time window
 	fromWindow := basetime
-	toWindow := basetime.Add(2 * time.Minute +  30 * time.Second)
+	toWindow := basetime.Add(2*time.Minute + 30*time.Second)
 
 	rounds, err := repo.GetRoundsBetween(ctx, fromWindow, toWindow)
 
 	require.NoError(t, err)
 	require.Equal(t, len(rounds), 3)
 	require.Equal(t, rounds[0].StartedAt, basetime)
-	require.Equal(t, rounds[1].StartedAt, basetime.Add(1 * time.Minute))
+	require.Equal(t, rounds[1].StartedAt, basetime.Add(1*time.Minute))
 }
 
 func TestMarkRunning_And_MarkCrashed_UpdateOnlyIntendedFields(t *testing.T) {
 	/* insert a round, call both updates, fetch it back,
 	confirm running_started_at/crashed_at/state changed
 	but seeds/crashpoint/nonce did not.*/
-
 
 	pool := testutil.SetupTestDB(t)
 	ctx := context.Background()
@@ -189,10 +186,9 @@ func TestMarkRunning_And_MarkCrashed_UpdateOnlyIntendedFields(t *testing.T) {
 	original := createTestRound(t, ctx, pool, time.Now())
 	require.Equal(t, "betting", string(original.State))
 
-
 	//transition to running
 	// update the state to running and the check again
-	runningTime :=  time.Now()
+	runningTime := time.Now()
 	err := repo.MarkRunning(ctx, original.ID, runningTime)
 	require.NoError(t, err)
 
@@ -228,4 +224,44 @@ func TestMarkRunning_And_MarkCrashed_UpdateOnlyIntendedFields(t *testing.T) {
 	require.Equal(t, original.CrashPoint, afterCrashed.CrashPoint)
 	require.Equal(t, original.Nonce, afterCrashed.Nonce)
 
+}
+
+func TestMarkRunning_RejectsRepeatedTransition(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	repo := round.NewPostgreRepo(pool)
+	r := createTestRound(t, ctx, pool, time.Now())
+
+	require.NoError(t, repo.MarkRunning(ctx, r.ID, time.Now()))
+	err := repo.MarkRunning(ctx, r.ID, time.Now()) // already running
+	require.ErrorIs(t, err, round.ErrInvalidTransition)
+}
+
+func TestMarkCrashed_RejectsRoundNotYetRunning(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	repo := round.NewPostgreRepo(pool)
+	r := createTestRound(t, ctx, pool, time.Now()) // still in betting
+
+	err := repo.MarkCrashed(ctx, r.ID, time.Now())
+	require.ErrorIs(t, err, round.ErrInvalidTransition)
+
+	// the rejected update must not have touched the row
+	got, err := repo.GetRoundById(ctx, r.ID)
+	require.NoError(t, err)
+	require.Equal(t, round.StateBetting, got.State)
+	require.Nil(t, got.CrashedAt)
+
+	got, err = repo.GetRoundById(ctx, r.ID)
+	require.NoError(t, err)
+	t.Logf("state after 'rejected' crash: %s, crashed_at set: %v", got.State, got.CrashedAt != nil)
+}
+
+func TestMarkRunning_RejectsUnknownRound(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	repo := round.NewPostgreRepo(pool)
+
+	err := repo.MarkRunning(ctx, uuid.New(), time.Now())
+	require.ErrorIs(t, err, round.ErrInvalidTransition)
 }
