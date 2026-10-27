@@ -45,6 +45,8 @@ type Manager struct {
 	cooldownWindow       time.Duration
 	multiplierGrowthRate float64
 	maxMultiplier        float64
+	storeTimeout         time.Duration
+	walletTimeout        time.Duration
 }
 
 type betRequest struct {
@@ -102,9 +104,18 @@ func NewManager(ctx context.Context, broadcast chan<- Event, walletsvc WalletSer
 		maxMultiplier:        100.0,
 	}
 
-	m.rotateEpoch()
+	m.rotateEpoch(ctx)
 	m.currentRound = m.newRound(ctx)
 	return m
+}
+
+func (m *Manager) persist(ctx context.Context, op string, roundID uuid.UUID, fn func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(ctx, m.storeTimeout)
+	defer cancel()
+
+	if err := fn(ctx); err != nil {
+		slog.Error("round persistence failed", "op", op, "round_id", roundID, "err", err)
+	}
 }
 
 func (m *Manager) computeMultiplierFromElapsed(elapsed time.Duration) float64 {
@@ -113,8 +124,7 @@ func (m *Manager) computeMultiplierFromElapsed(elapsed time.Duration) float64 {
 }
 
 func (m *Manager) newRound(ctx context.Context) *Round {
-	crashpoint := fairness.ComputeCrashPoint(m.serverSeed, m.clientSeed, m.nonce, m.houseEdge)
-	crashpoint = math.Min(crashpoint, m.maxMultiplier)
+	crashpoint := fairness.CrashPoint(m.serverSeed, m.clientSeed, m.nonce, m.houseEdge, m.maxMultiplier)
 
 	round := &Round{
 		ID:             uuid.New(),
@@ -128,20 +138,20 @@ func (m *Manager) newRound(ctx context.Context) *Round {
 		Bets:           make(map[uuid.UUID]int64),
 	}
 
-	if err := m.roundStore.InsertRound(ctx, *round); err != nil {
-		slog.Error("failed to persist new round", "round_id", round.ID, "err", err)
-	}
+	m.persist(ctx, "insert_round", round.ID, func(ctx context.Context) error {
+		return m.roundStore.InsertRound(ctx, *round)
+	})
 
 	m.nonce++
 
 	if m.nonce >= m.roundsPerEpoch {
-		m.rotateEpoch()
+		m.rotateEpoch(ctx)
 	}
 
 	return round
 }
 
-func (m *Manager) rotateEpoch() {
+func (m *Manager) rotateEpoch(ctx context.Context) {
 	// generate the client and server seed
 	// hash the server seed and reset nonce to 0
 
@@ -155,7 +165,7 @@ func (m *Manager) rotateEpoch() {
 	m.nonce = 0
 
 	if oldSeed != "" {
-		m.broadcast <- EpochRevealedEvent{ServerSeed: oldSeed, ServerSeedHash: fairness.HashSeed(oldSeed)}
+		m.sendCritical(ctx, EpochRevealedEvent{ServerSeed: oldSeed, ServerSeedHash: fairness.HashSeed(oldSeed)})
 	}
 }
 
@@ -169,18 +179,18 @@ func (m *Manager) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case req := <-m.betRequests:
-			err := m.handleBet(req)
-			req.ResultCh <- err
+			req.ResultCh <- m.handleBet(ctx, req)
 		case req := <-m.cashoutRequests:
-			err := m.handleCashout(req)
-			req.ResultCh <- err
+			req.ResultCh <- m.handleCashout(ctx, req)
 		case <-ticker.C:
 			m.tick(ctx)
 		}
 	}
 }
 
-func (m *Manager) handleBet(req betRequest) error {
+const walletTimeout = 3 * time.Second
+
+func (m *Manager) handleBet(ctx context.Context, req betRequest) error {
 	if m.currentRound.State != StateBetting {
 		return ErrBettingClosed
 	}
@@ -188,14 +198,17 @@ func (m *Manager) handleBet(req betRequest) error {
 	// call debit to minus the amount from their wallet
 	idempotencyKey := fmt.Sprintf("bet-%s-%s", m.currentRound.ID, req.UserID)
 
-	if err := m.wallet.Debit(context.Background(), req.WalletID, req.Amount, wallet.EntryBetStake, m.currentRound.ID, idempotencyKey); err != nil {
+	wctx, cancel := context.WithTimeout(ctx, walletTimeout)
+	defer cancel()
+
+	if err := m.wallet.Debit(wctx, req.WalletID, req.Amount, wallet.EntryBetStake, m.currentRound.ID, idempotencyKey); err != nil {
 		return err
 	}
 	m.currentRound.Bets[req.UserID] = req.Amount
 	return nil
 }
 
-func (m *Manager) handleCashout(req cashoutRequest) error {
+func (m *Manager) handleCashout(ctx context.Context, req cashoutRequest) error {
 	if m.currentRound.State != StateRunning {
 		return ErrRoundNotRunning
 	}
@@ -207,12 +220,13 @@ func (m *Manager) handleCashout(req cashoutRequest) error {
 	}
 
 	currentMultiplier := m.computeMultiplierFromElapsed(time.Since(*m.currentRound.RunningStartedAt))
-
 	payout := int64(float64(bet) * currentMultiplier)
-
 	idempotencyKey := fmt.Sprintf("cashout-%s-%s", m.currentRound.ID, req.UserID)
 
-	if err := m.wallet.Credit(context.Background(), req.WalletID, payout, wallet.EntryPayout, m.currentRound.ID, idempotencyKey); err != nil {
+	wctx, cancel := context.WithTimeout(ctx, walletTimeout)
+	defer cancel()
+
+	if err := m.wallet.Credit(wctx, req.WalletID, payout, wallet.EntryPayout, m.currentRound.ID, idempotencyKey); err != nil {
 		return err
 	}
 	delete(m.currentRound.Bets, req.UserID) //mark as settled so that the crush doesn't also count them a loss
@@ -231,7 +245,11 @@ func (m *Manager) tick(ctx context.Context) {
 		if multiplier >= m.currentRound.CrashPoint {
 			m.crash(ctx) // reveal the seed, settles remaining bets as losses, flip states
 		} else {
-			m.broadcast <- TickEvent{Multiplier: multiplier}
+			select {
+			case m.broadcast <- TickEvent{Multiplier: multiplier}:
+			default:
+				// consumer is behind; dropping one tick is harmless; stalling the game is not
+			}
 		}
 
 	case StateCrashed:
@@ -241,14 +259,20 @@ func (m *Manager) tick(ctx context.Context) {
 	}
 }
 
+func (m *Manager) sendCritical(ctx context.Context, ev Event) {
+	select {
+	case m.broadcast <- ev:
+	case <-ctx.Done():
+	}
+}
+
 func (m *Manager) startRunning(ctx context.Context) {
 	now := time.Now()
 	m.currentRound.State = StateRunning
 	m.currentRound.RunningStartedAt = &now
-
-	if err := m.roundStore.MarkRunning(ctx, m.currentRound.ID, now); err != nil {
-		slog.Error("failed to persist running state", "round_id", m.currentRound.ID, "err", err)
-	}
+	m.persist(ctx, "mark_running", m.currentRound.ID, func(ctx context.Context) error {
+		return m.roundStore.MarkRunning(ctx, m.currentRound.ID, now)
+	})
 }
 
 func (m *Manager) crash(ctx context.Context) {
@@ -256,11 +280,13 @@ func (m *Manager) crash(ctx context.Context) {
 	m.currentRound.State = StateCrashed
 	m.currentRound.CrashedAt = &now
 
-	if err := m.roundStore.MarkCrashed(ctx, m.currentRound.ID, now); err != nil {
-		slog.Error("failed to persist crashed state", "round_id", m.currentRound.ID, "err", err)
-	}
 	// broadcast the crash event and settle the remaining bets in bets as losses since they did not cashout
-	m.broadcast <- CrashEvent{Crashpoint: m.currentRound.CrashPoint, Nonce: m.currentRound.Nonce}
+	m.sendCritical(ctx, CrashEvent{Crashpoint: m.currentRound.CrashPoint, Nonce: m.currentRound.Nonce})
+
+	m.persist(ctx, "mark_crashed", m.currentRound.ID, func(ctx context.Context) error {
+		return m.roundStore.MarkCrashed(ctx, m.currentRound.ID, now)
+	})
+
 }
 
 func (m *Manager) startNewRound(ctx context.Context) {
