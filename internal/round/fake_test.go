@@ -53,6 +53,7 @@ type fakeRoundStore struct {
 	running   []uuid.UUID
 	crashed   []uuid.UUID
 	insertErr error // set before NewManager to simulate a failing database
+	delay     time.Duration
 }
 
 func newFakeRoundStore() *fakeRoundStore {
@@ -171,7 +172,7 @@ func TestHandleBet_DebitsWalletAndRecordsBet(t *testing.T) {
 	walletID := uuid.New()
 	fw.balances[walletID] = 1000
 
-	err := m.handleBet(betRequest{UserID: userID, WalletID: walletID, Amount: 500})
+	err := m.handleBet(ctx, betRequest{UserID: userID, WalletID: walletID, Amount: 500})
 	require.NoError(t, err)
 
 	require.Equal(t, int64(500), fw.balances[walletID])       // debited
@@ -186,7 +187,7 @@ func TestHandleBet_RejectsWhenBettingClosed(t *testing.T) {
 	m := NewManager(ctx, broadcast, fw, store, 0.03, 1000)
 	m.currentRound.State = StateRunning // betting already closed
 
-	err := m.handleBet(betRequest{UserID: uuid.New(), WalletID: uuid.New(), Amount: 100})
+	err := m.handleBet(ctx, betRequest{UserID: uuid.New(), WalletID: uuid.New(), Amount: 100})
 	require.ErrorIs(t, err, ErrBettingClosed)
 }
 
@@ -204,7 +205,7 @@ func TestHandleCashout_CreditsWalletAndRemovesBet(t *testing.T) {
 	m.currentRound.RunningStartedAt = &now // fresh, so the multiplier is ~1.0x
 	m.currentRound.Bets[userID] = 500
 
-	err := m.handleCashout(cashoutRequest{UserID: userID, WalletID: walletID})
+	err := m.handleCashout(ctx, cashoutRequest{UserID: userID, WalletID: walletID})
 	require.NoError(t, err)
 
 	require.InDelta(t, 500, fw.balances[walletID], 10) // ~1.0x payout on a 500 stake
@@ -220,7 +221,7 @@ func TestHandleCashout_RejectsWhenRoundNotRunning(t *testing.T) {
 	m := NewManager(ctx, broadcast, fw, store, 0.03, 1000)
 	// round starts in StateBetting
 
-	err := m.handleCashout(cashoutRequest{UserID: uuid.New(), WalletID: uuid.New()})
+	err := m.handleCashout(ctx, cashoutRequest{UserID: uuid.New(), WalletID: uuid.New()})
 	require.ErrorIs(t, err, ErrRoundNotRunning)
 }
 
@@ -232,7 +233,7 @@ func TestHandleCashout_RejectsWhenNoBetPlaced(t *testing.T) {
 	m := NewManager(ctx, broadcast, fw, store, 0.03, 1000)
 	m.currentRound.State = StateRunning
 
-	err := m.handleCashout(cashoutRequest{UserID: uuid.New(), WalletID: uuid.New()}) // never bet
+	err := m.handleCashout(ctx, cashoutRequest{UserID: uuid.New(), WalletID: uuid.New()}) // never bet
 	require.ErrorIs(t, err, ErrBetNotPlaced)
 }
 
@@ -252,7 +253,7 @@ func TestPlaceBet_SendsRequestAndReturnsResult(t *testing.T) {
 	// stand in for what Run()'s select loop would do, without running the full loop
 	go func() {
 		req := <-m.betRequests
-		req.ResultCh <- m.handleBet(req)
+		req.ResultCh <- m.handleBet(ctx, req)
 	}()
 
 	err := m.PlaceBet(userID, walletID, 500)
@@ -330,6 +331,10 @@ func TestRun_FullRoundLifecycle_ThroughRealTicker(t *testing.T) {
 			t.Fatal("timed out waiting for a CrashEvent: round never crashed")
 		}
 	}
+
+	require.Eventually(t, func() bool {
+	return len(store.crashedIDs()) > 0
+}, time.Second, 10*time.Millisecond)
 
 	require.NotEmpty(t, store.runningIDs())
 	require.NotEmpty(t, store.crashedIDs())
@@ -457,3 +462,43 @@ func TestNewRound_RotatesEpochExactlyAtBoundary(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, initialSeed, revealed.ServerSeed) // the OLD seed gets revealed
 }
+
+
+func TestStartRunning_DoesNotStallWhenStoreIsSlow(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeRoundStore()
+	m := NewManager(ctx, make(chan Event, 100), newFakeWallet(), store, 0.03, 100)
+
+	m.storeTimeout = 50 * time.Millisecond
+	store.delay = 5 * time.Second // set after NewManager so the first insert isn't slowed
+
+	start := time.Now()
+	m.startRunning(ctx)
+
+	require.Less(t, time.Since(start), time.Second)       // gave up at the deadline, didn't wait 5s
+	require.Equal(t, StateRunning, m.currentRound.State)  // the round still advanced in memory
+}
+
+
+func TestTick_DoesNotBlockWhenBroadcastIsFull(t *testing.T) {
+	ctx := context.Background()
+	broadcast := make(chan Event, 1)
+	m := NewManager(ctx, broadcast, newFakeWallet(), newFakeRoundStore(), 0.03, 100)
+
+	broadcast <- TickEvent{} // fill it after construction
+	now := time.Now()
+	m.currentRound.State = StateRunning
+	m.currentRound.RunningStartedAt = &now
+	m.currentRound.CrashPoint = 100 // far above the current multiplier, so tick takes the broadcast branch
+
+	done := make(chan struct{})
+	go func() { m.tick(ctx); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("tick blocked on a full broadcast channel")
+	}
+}
+
+
